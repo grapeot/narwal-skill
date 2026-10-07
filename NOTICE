@@ -1,0 +1,15 @@
+Narwal Local Skill
+Copyright (c) 2026 grapeot
+
+This product vendors read-only protocol, model, and map-renderer modules from
+sjmotew/NarwalIntegration narwal_client at commit
+867706aa352729bd5367c258d4fd42de7cfd19a1.
+Those modules are Copyright (c) 2026 sjmotew and remain under the MIT License.
+See src/narwal_skill/vendor/NOTICE.
+
+The upstream control client is not included. This product does not send
+actuation, camera, reboot, or raw-command topics.
+
+Coordinate policy "grid" follows the raw-minus-origin placement described for
+the earlier sytchi map client (referenced commit f527b72). That tree was not
+present in this build, and no sytchi source was copied.

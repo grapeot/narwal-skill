@@ -1,0 +1,46 @@
+[project]
+name = "narwal-skill"
+version = "0.1.0"
+description = "Read-only local CLI for Narwal vacuums on WebSocket port 9002"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "grapeot"}]
+dependencies = [
+    "websockets>=12.0,<14.0",
+    "bbpb>=1.4.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+narwal-local = "narwal_skill.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+narwal_skill = ["py.typed"]
+"narwal_skill.vendor" = ["NOTICE"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["src/narwal_skill/vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

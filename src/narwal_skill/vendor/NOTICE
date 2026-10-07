@@ -1,0 +1,13 @@
+Vendored read-only modules from sjmotew/NarwalIntegration.
+
+Source: https://github.com/sjmotew/NarwalIntegration
+Path: narwal_client/{protocol,const,models,map_renderer}.py
+Commit: 867706aa352729bd5367c258d4fd42de7cfd19a1
+Copyright (c) 2026 sjmotew
+License: MIT (see the repository LICENSE and the project LICENSE)
+
+Not vendored: narwal_client/client.py and the Home Assistant component.
+const.py still contains upstream topic-name constants, including control
+topics. Those strings are protocol documentation metadata from the pinned
+commit. They are not an active adapter and this product does not send them.
+See narwal_skill.allowlist.
