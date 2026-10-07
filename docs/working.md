@@ -61,9 +61,11 @@
 - [x] **Milestone 7: Antigravity Skill Definition**
   - [x] Authored root discoverable skill `skills/narwal/SKILL.md`
   - [x] Authored focused references `compatibility.md` and `output-contract.md`
-- [ ] **Milestone 8: Publication & External Review**
+- [x] **Milestone 8: Publication & External Review**
    - [x] Independent DeepSeek privacy/code review completed; reproduced findings fixed and rechecked with no blocking findings remaining
-   - [ ] Public GitHub publication and downstream catalog integration (authorized on 2026-10-06; execution in progress)
+   - [x] Public repository published at `grapeot/narwal-skill`; initial commit `1c02acf` and repository CI passed
+   - [x] Master protection verified: required PRs, zero reviewers, strict `test` check, administrator enforcement, force pushes/deletions disabled
+   - [x] Chinese/English ecosystem and skills registry catalog PRs merged; registry entry 79 in `analyze` / `life`
 
 ---
 
@@ -129,3 +131,9 @@ The following empirical protocol facts and engineering lessons were verified dur
 - **2026-10-06 (Publication Preparation):**
   - User authorized a public repository, PR-required master protection with zero reviewers and admin enforcement, and submission/merge of the three catalog PRs.
   - Antigravity drafted the repository description, bilingual ecosystem rows, registry entry and PR descriptions; the main thread checked their capability and model-scope claims.
+- **2026-10-06 (Public Release & Catalog Integration):**
+  - Published [grapeot/narwal-skill](https://github.com/grapeot/narwal-skill) with default branch master and initial commit `1c02acf`; [repository CI](https://github.com/grapeot/narwal-skill/actions/runs/37569264150) passed.
+  - Verified protection via API: PRs required with zero approving reviewers, strict test status check, administrators enforced, and no bypass exceptions or force pushes/deletions.
+  - Merged [Chinese ecosystem #105](https://github.com/grapeot/context-infrastructure/pull/105) and [English ecosystem #62](https://github.com/grapeot/context-infrastructure-en/pull/62).
+  - Merged [Superlinear registry #44](https://github.com/yage-ai/superlinear_skills_registry/pull/44), adding sequence 79 in analyze / life. Registry checker, lint, 18 Vitest tests, build, pull-request CI and post-merge CI passed; the merge commit's Vercel Production deployment reported success.
+  - Descriptions were drafted by Antigravity and fact-checked against the unchanged read-only port-9002 product; private configuration, robot identifiers, maps and recordings were excluded from publication.
