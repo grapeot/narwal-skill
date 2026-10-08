@@ -7,8 +7,12 @@ sjmotew/NarwalIntegration narwal_client at commit
 Those modules are Copyright (c) 2026 sjmotew and remain under the MIT License.
 See src/narwal_skill/vendor/NOTICE.
 
-The upstream control client is not included. This product does not send
-actuation, camera, reboot, or raw-command topics.
+The upstream control client is not included. This product re-implements a small
+set of control payloads (pause, resume, stop, dock, and the clean/start_clean
+CleanTask) from the same pinned upstream commit for its opt-in control mode.
+Read-only remains the default; a permanent deny list blocks reboot, shutdown,
+camera, developer, live parameter mutation, dock maintenance, task/cancel,
+clean/plan/start, clean/easy_clean/start, and raw command injection.
 
 Coordinate policy "grid" follows the raw-minus-origin placement described for
 the earlier sytchi map client (referenced commit f527b72). That tree was not

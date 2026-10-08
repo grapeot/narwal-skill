@@ -8,12 +8,13 @@
 
 ## 1. System Architecture
 
-`narwal-local` is a standalone, read-only Python CLI and library providing direct WebSocket communication with Narwal robot vacuums on TCP port 9002.
+`narwal-local` is a standalone Python CLI and library providing direct WebSocket communication with Narwal robot vacuums on TCP port 9002. Read-only inspection is the default; an opt-in control mode adds a small set of write commands.
 
 ```text
 +-------------------------------------------------------------+
 |                     narwal-local CLI                        |
-|        (snapshot / map / watch / doctor subcommands)        |
+|  snapshot / map / watch / doctor                            |
+|  pause / resume / stop / dock / start / clean (opt-in)     |
 +------------------------------+------------------------------+
                                |
                                v
@@ -28,7 +29,7 @@
 |  | - Single-outstanding serial request queue             |  |
 |  | - Empty-topic response matcher (field5)               |  |
 |  | - Socket reset on query timeout (purges late replies) |  |
-|  | - Send allowlist gatekeeper (6 read-only topics)      |  |
+|  | - Two-tier allowlist gate (read always, control opt-in)| |
 |  +-------------------------------------------------------+  |
 +------------------------------+------------------------------+
                                | ws://<host>:9002
@@ -45,7 +46,7 @@
 This project vendors protocol models, constants, and map rendering helpers from [`sjmotew/NarwalIntegration`](https://github.com/sjmotew/NarwalIntegration) at commit `867706aa352729bd5367c258d4fd42de7cfd19a1` (MIT License, Copyright 2026 sjmotew):
 - Extracted modules: `protocol.py`, `const.py`, `models.py`, `map_renderer.py`.
 - **Decoupled from Home Assistant:** Zero dependencies on `homeassistant.*`.
-- **Excluded Control Logic:** Upstream actuation methods (`start`, `clean_area`, `stop`, `motion`, `dock`, `camera`) are strictly excluded.
+- **Control client not vendored:** Upstream `client.py` is not included. The opt-in control mode re-implements only the payloads it needs (empty-payload task/supply commands and the `clean/start_clean` CleanTask) from the same pinned commit.
 - **Attribution:** Preserved in `NOTICE` and package data `src/narwal_skill/vendor/NOTICE`.
 
 ---
@@ -63,16 +64,16 @@ Response frames are marked field5 (`0x2a`) and have an empty topic; their payloa
 
 Payload schemas are checked per query, and mismatches/unsolicited replies invalidate the connection. The protocol has no request ID, so same-schema delayed duplicates remain indistinguishable. There is no universal guarantee against all possible duplicate replies.
 
-### 3.3. Send Topic Allowlist
-The library enforces a strict allowlist in `allowlist.py` before any binary frame is built:
-- `common/get_device_info`
-- `status/get_device_base_status`
-- `map/get_map`
-- `common/get_feature_list` (snapshot `--with-features` only)
-- `common/active_robot_publish`
-- `status/app_status_heartbeat`
+### 3.3. Two-Tier Send Allowlist
+The library enforces a two-tier allowlist in `allowlist.py` before any binary frame is built:
+- **Read (always allowed):** `common/get_device_info`, `status/get_device_base_status`, `map/get_map`, `common/get_feature_list`, `common/active_robot_publish`, `status/app_status_heartbeat`.
+- **Control (only with `control=True` / `allow_control=True` session):** `task/pause`, `task/resume`, `task/force_end`, `supply/recall`, `clean/start_clean`.
+- **Permanent deny (never sent):** reboot, shutdown, yell, `common/notify_app_event`, camera/developer topics, live parameter mutation, dock maintenance, `task/cancel`, `clean/plan/start`, `clean/easy_clean/start`, and raw injection.
 
-All actuation, motion, recall, maintenance, and raw-send endpoints are blocked.
+A default session (`allow_control=False`) cannot send a control topic: `require_send_topic(topic, control=False)` rejects it with `ReadOnlyViolation`.
+
+### 3.4. Control Response Semantics
+Control replies are field5 frames with field 1 as a result code: `1` success, `6` applied, `2` not applicable, `3` conflict, `4` not ready; a dict is the room-clean config echo. Codes `1/6/echo` are accepted; `2/3/4` are valid declines that exit `20`; anything else closes the socket. The room-clean path (`clean/start_clean`) must be used rather than `clean/plan/start`, which newer firmware answers `SUCCESS` to without cleaning.
 
 ---
 

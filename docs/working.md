@@ -137,3 +137,15 @@ The following empirical protocol facts and engineering lessons were verified dur
   - Merged [Chinese ecosystem #105](https://github.com/grapeot/context-infrastructure/pull/105) and [English ecosystem #62](https://github.com/grapeot/context-infrastructure-en/pull/62).
   - Merged [Superlinear registry #44](https://github.com/yage-ai/superlinear_skills_registry/pull/44), adding sequence 79 in analyze / life. Registry checker, lint, 18 Vitest tests, build, pull-request CI and post-merge CI passed; the merge commit's Vercel Production deployment reported success.
   - Descriptions were drafted by Antigravity and fact-checked against the unchanged read-only port-9002 product; private configuration, robot identifiers, maps and recordings were excluded from publication.
+- **2026-10-07 (Opt-In Control Mode):**
+  - Added a two-tier send allowlist: read topics always allowed, control topics (`task/pause`, `task/resume`, `task/force_end`, `supply/recall`, `clean/start_clean`) only with an explicit `allow_control=True` session, and an unchanged permanent deny list.
+  - Added `control.py` re-implementing the empty-payload commands and the newer `clean/start_clean` CleanTask from the pinned upstream commit `867706aa` (control client not vendored; attribution retained).
+  - Added CLI commands `pause`, `resume`, `stop`, `dock`, `start`, `clean` with `--yes` confirmation, `--dry-run` preview, and a gitignored `control_audit.jsonl`.
+  - Added exit code `20` (`EXIT_COMMAND`) for a command the robot declines (`NOT_APPLICABLE` / `CONFLICT` / `NOT_READY`).
+  - Added `docs/control.md` design; updated PRD, RFC, test plan, README, AGENTS, NOTICE, and the root skill.
+  - Offline suite is now 80 passed, 1 opt-in skip; live `start --dry-run` fetched the active map and built a decodable payload without sending.
+- **2026-10-07 (Independent Review Remediation):**
+  - An independent DeepSeek privacy + code review found privacy clean and the allowlist sound, and one blocker: `clean/start_clean` clamped `--fan super` (5) to `deep` (4). Upstream writes the tier unclamped and a Flow 2 accepts SUPER. Fixed the fan table and the test; live dry-run now emits `tag2 = 5`.
+  - Fixed an audit-write failure overriding the command exit code (0 / 20) to 3; it now adds an `audit_write_failed` warning.
+  - Corrected `--dry-run` wording in the docs: it opens a read session and fetches identity/status/map to build the payload, but sends no control topic.
+  - Hardened the payload-build path so a builder `ValueError` cannot leak the session; de-duplicated `--rooms`; removed a dead `default=None` and a duplicate `return`; bumped to `0.2.0`.

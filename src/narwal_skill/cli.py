@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="narwal-local",
         description="Read-only local Narwal WebSocket CLI. stdout is one JSON document.",
     )
-    parser.add_argument("--version", action="version", version="narwal-local 0.1.0")
+    parser.add_argument("--version", action="version", version="narwal-local 0.2.0")
     sub = parser.add_subparsers(dest="command", required=True)
 
     snapshot = sub.add_parser("snapshot", help="Identity, base status, and a short broadcast listen.")
@@ -110,7 +110,75 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="TCP, WebSocket, identity, and one status query. Ping is not success.")
     _connection(doctor)
+
+    _control_subcommands(sub)
     return parser
+
+
+def _control_common(parser: argparse.ArgumentParser) -> None:
+    _connection(parser)
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the write command. Required unless --dry-run is set.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build the topic and payload, print them, and send nothing. Does not need --yes.",
+    )
+    parser.add_argument(
+        "--no-audit",
+        action="store_true",
+        help="Skip the control_audit.jsonl line.",
+    )
+    parser.add_argument("--out-dir", default="artifacts", help="Audit artifact directory.")
+
+
+def _clean_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mode",
+        choices=("vacuum", "mop", "vacuum_then_mop", "vacuum_and_mop"),
+        default="vacuum_and_mop",
+        help="Clean work mode. Default vacuum_and_mop.",
+    )
+    parser.add_argument(
+        "--fan",
+        choices=("mute", "normal", "strong", "deep", "super"),
+        default="normal",
+        help="Suction level. Default normal.",
+    )
+    parser.add_argument(
+        "--water",
+        choices=("dry", "normal", "wet"),
+        default="normal",
+        help="Mop water volume. Default normal.",
+    )
+    parser.add_argument("--passes", type=int, default=1, help="Pass count 1..3. Default 1.")
+
+
+def _control_subcommands(sub: argparse._SubParsersAction) -> None:
+    for name, help_text in (
+        ("pause", "Pause the current task."),
+        ("resume", "Resume a paused task."),
+        ("stop", "Force-stop the current task. The robot stops before answering."),
+        ("dock", "Send the robot back to its dock (recall)."),
+    ):
+        parser = sub.add_parser(name, help=help_text)
+        _control_common(parser)
+
+    start = sub.add_parser("start", help="Start a whole-house clean over every room on the active map.")
+    _control_common(start)
+    _clean_options(start)
+
+    clean = sub.add_parser("clean", help="Start a clean for selected rooms.")
+    _control_common(clean)
+    _clean_options(clean)
+    clean.add_argument(
+        "--rooms",
+        required=True,
+        help="Comma-separated robot room ids, e.g. 3,5,7. Validated against the active map.",
+    )
 
 
 def _settings_from(args: argparse.Namespace):
@@ -138,7 +206,7 @@ def _emit(envelope: Envelope) -> int:
 def _usage(exc: UsageError) -> int:
     env = Envelope(status="failed", device=empty_device(), exit_code=EXIT_USAGE)
     env.errors.append(exception_payload(exc))
-    env.data = {"usage": "narwal-local <snapshot|map|watch|doctor> --help"}
+    env.data = {"usage": "narwal-local <snapshot|map|watch|doctor|pause|resume|stop|dock|start|clean> --help"}
     print(exc.message, file=sys.stderr)
     return _emit(env)
 
@@ -193,7 +261,46 @@ async def _run(args: argparse.Namespace) -> Envelope:
         )
     if args.command == "doctor":
         return await run_doctor(settings, diag)
+    if args.command in {"pause", "resume", "stop", "dock", "start", "clean"}:
+        from narwal_skill.commands import run_control
+
+        passes = getattr(args, "passes", 1)
+        if isinstance(passes, bool) or not isinstance(passes, int) or not 1 <= passes <= 3:
+            raise UsageError("invalid --passes", detail="passes must be an integer 1..3")
+        return await run_control(
+            settings,
+            action=args.command,
+            rooms=_parse_rooms(getattr(args, "rooms", None)),
+            mode=getattr(args, "mode", "vacuum_and_mop"),
+            fan=getattr(args, "fan", "normal"),
+            water=getattr(args, "water", "normal"),
+            passes=passes,
+            dry_run=args.dry_run,
+            yes=args.yes,
+            no_audit=args.no_audit,
+            out_dir=Path(args.out_dir),
+            diag=diag,
+        )
     raise UsageError(f"unknown command {args.command}", detail=args.command)
+
+
+def _parse_rooms(text: str | None) -> list[int]:
+    if text is None:
+        return []
+    rooms: list[int] = []
+    for chunk in text.split(","):
+        token = chunk.strip()
+        if not token:
+            continue
+        try:
+            room = int(token)
+        except ValueError as exc:
+            raise UsageError(f"invalid --rooms value {token!r}", detail=str(exc)) from exc
+        if room <= 0:
+            raise UsageError(f"invalid room id {room}", detail="room ids are positive integers")
+        if room not in rooms:
+            rooms.append(room)
+    return rooms
 
 
 def main(argv: list[str] | None = None) -> int:

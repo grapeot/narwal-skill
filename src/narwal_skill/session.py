@@ -62,6 +62,7 @@ class ReadOnlySession:
     url: str
     connect_timeout_s: float
     deadline: float
+    allow_control: bool = False
     sent_topics: list[str] = field(default_factory=list)
     broadcasts: list[Broadcast] = field(default_factory=list)
     text_frames: list[str] = field(default_factory=list)
@@ -150,8 +151,9 @@ class ReadOnlySession:
         *,
         full_topic: str,
         timeout_s: float,
+        control: bool = False,
     ) -> QueryResult:
-        require_send_topic(short_topic)
+        require_send_topic(short_topic, control=control and self.allow_control)
         if short_topic in UNACKNOWLEDGED_SEND_TOPICS:
             raise QueryError(
                 f"{short_topic} is not a request/response query",
@@ -213,7 +215,7 @@ class ReadOnlySession:
             self._dead = True
             await self.aclose()
             raise
-        from narwal_skill.response_shape import validate_query_response
+        from narwal_skill.response_shape import validate_control_response, validate_query_response
 
         try:
             if topic:
@@ -221,7 +223,10 @@ class ReadOnlySession:
                     "field5 reply topic is non-empty and is not a correlation id",
                     detail=f"response_topic={topic!r}",
                 )
-            validate_query_response(short_topic, decoded)
+            if control:
+                validate_control_response(short_topic, decoded)
+            else:
+                validate_query_response(short_topic, decoded)
         except (DecodeError, QueryError):
             self._dead = True
             await self.aclose()

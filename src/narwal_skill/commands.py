@@ -21,8 +21,11 @@ from narwal_skill.errors import (
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_QUERY,
+    EXIT_USAGE,
     ArtifactError,
     BudgetExceeded,
+    CommandNotApplied,
+    ConfirmationRequired,
     ConnectionCap,
     NarwalError,
     QueryError,
@@ -69,7 +72,7 @@ class Runner:
         device = (self.identity or {}).get("device_id") or self.settings.device_id or ""
         return self.settings.topic(short, key, device)
 
-    async def open_session(self) -> ReadOnlySession:
+    async def open_session(self, *, allow_control: bool = False) -> ReadOnlySession:
         """Open one connection against the command deadline. Callers cannot extend it."""
         if self.opens >= MAX_CONNECTIONS:
             raise ConnectionCap(
@@ -86,6 +89,7 @@ class Runner:
             url=self.url(),
             connect_timeout_s=min(self.settings.connect_timeout_s, max(0.0, self.deadline - time.monotonic())),
             deadline=self.deadline,
+            allow_control=allow_control,
             sent_topics=self.sent_topics,
         )
         self.diag(f"connecting {self.url()} ({self.opens}/{MAX_CONNECTIONS})")
@@ -104,6 +108,23 @@ class Runner:
         if rejected is not None:
             raise rejected
         return result
+
+    async def send_control(
+        self,
+        session: ReadOnlySession,
+        short: str,
+        payload: bytes = b"",
+        *,
+        timeout_s: float | None = None,
+    ) -> QueryResult:
+        self.diag(f"command {short} ({len(payload)} bytes)")
+        return await session.query(
+            short,
+            payload,
+            full_topic=self._topic(short),
+            timeout_s=timeout_s if timeout_s is not None else self.settings.query_timeout_s,
+            control=True,
+        )
 
     async def discover(self) -> dict[str, str]:
         keys: list[str]
@@ -606,6 +627,290 @@ async def run_doctor(settings: Settings, diag: Diag) -> Envelope:
             await session.aclose()
     _finalize(env)
     return env
+
+
+CONTROL_ACTIONS = ("pause", "resume", "stop", "dock", "start", "clean")
+STOP_QUERY_TIMEOUT_S = 15.0
+
+
+def _audit_line(
+    *,
+    action: str,
+    short_topic: str,
+    full_topic: str,
+    payload: bytes,
+    result_code: int | None,
+    outcome: str,
+) -> str:
+    return json.dumps(
+        {
+            "observed_at": utc_now(),
+            "action": action,
+            "topic": short_topic,
+            "full_topic": full_topic,
+            "payload_hex": payload.hex(),
+            "result_code": result_code,
+            "outcome": outcome,
+        },
+        allow_nan=False,
+    )
+
+
+def _write_audit(out_dir: Path, line: str) -> Path:
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "control_audit.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        raise ArtifactError(
+            "failed to write control audit log",
+            detail=f"{type(exc).__name__}: {exc}",
+            cause=exc,
+        ) from exc
+    return path
+
+
+def _preflight_view(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    mode = payload.get("mode") or {}
+    return {
+        "battery_percent": payload.get("battery_percent"),
+        "working_mode": mode.get("semantic"),
+        "working_mode_code": mode.get("code"),
+        "fault_codes": payload.get("fault_codes"),
+        "note": "Informational only. The robot arbitrates whether the command applies.",
+    }
+
+
+async def _load_map(session: ReadOnlySession, runner: Runner) -> tuple[int, list[int]]:
+    """Fetch the active map and return (map_id, cleanable room ids)."""
+    from narwal_skill.map_export import room_records
+
+    result = await runner.query(session, "map/get_map")
+    map_data = parse_map_response(result.decoded)
+    if not map_data.map_id:
+        raise QueryError(
+            "active map has no map id",
+            detail="clean/start_clean needs the active map id from get_map field 2.1",
+        )
+    rooms = [record["room_id"] for record in room_records(map_data) if record["room_id"] > 0]
+    return map_data.map_id, rooms
+
+
+async def run_control(
+    settings: Settings,
+    *,
+    action: str,
+    rooms: list[int],
+    mode: str,
+    fan: str,
+    water: str,
+    passes: int,
+    dry_run: bool,
+    yes: bool,
+    no_audit: bool,
+    out_dir: Path,
+    diag: Diag,
+) -> Envelope:
+    from narwal_skill.control import EMPTY_CONTROL_TOPICS, control_result
+
+    env = Envelope(observed_at=utc_now())
+    if action not in CONTROL_ACTIONS:
+        env.fail(UsageError(f"unknown control action {action!r}", detail=action))
+        env.status = "failed"
+        env.exit_code = EXIT_USAGE
+        env.device = empty_device()
+        return env
+    if not yes and not dry_run:
+        env.fail(
+            ConfirmationRequired(
+                "control commands need an explicit --yes",
+                detail="re-run with --yes to send, or --dry-run to preview without sending",
+            )
+        )
+        env.status = "failed"
+        env.exit_code = EXIT_USAGE
+        env.device = empty_device()
+        return env
+    if action == "clean" and not rooms:
+        env.fail(UsageError("clean requires --rooms", detail="pass one or more room ids, e.g. --rooms 3,5"))
+        env.status = "failed"
+        env.exit_code = EXIT_USAGE
+        env.device = empty_device()
+        return env
+
+    runner = Runner(settings, diag)
+    # Preflight and map lookup need a read session; the command needs a control
+    # session. The allowlist gate is per-session, so both are explicit here.
+    pre_session: ReadOnlySession | None = None
+    control_session: ReadOnlySession | None = None
+    payload = b""
+    short_topic = ""
+    try:
+        identity = await runner.discover()
+        apply_device(env, identity)
+    except NarwalError as exc:
+        env.fail(exc)
+        env.device = empty_device()
+        env.status = "failed"
+        env.exit_code = exc.exit_code
+        return env
+
+    try:
+        pre_session = await runner.open_session()
+        base = await runner.query(pre_session, "status/get_device_base_status")
+        base_payload = unwrap_base_status(base.decoded)
+        env.data["preflight"] = _preflight_view(
+            normalize_base(
+                base_payload if base_payload is not None else base.decoded,
+                source="status/get_device_base_status",
+                observed_at=base.observed_at,
+            )
+            if base_payload is not None
+            else None
+        )
+        if action in {"start", "clean"}:
+            map_id, known_rooms = await _load_map(pre_session, runner)
+            if action == "clean":
+                unknown = [room for room in rooms if room not in known_rooms]
+                if unknown:
+                    raise UsageError(
+                        f"unknown room ids: {unknown}",
+                        detail=f"active map rooms are {sorted(known_rooms)}",
+                    )
+                target_rooms = rooms
+            else:
+                target_rooms = known_rooms
+            if not target_rooms:
+                raise QueryError(
+                    "no cleanable rooms on the active map",
+                    detail="whole-house start needs at least one room on the map",
+                )
+            env.data["target_rooms"] = target_rooms
+            payload = build_start_payload(
+                target_rooms,
+                map_id,
+                mode=mode,
+                fan=fan,
+                water=water,
+                passes=passes,
+            )
+            short_topic = "clean/start_clean"
+        else:
+            short_topic, payload = EMPTY_CONTROL_TOPICS[action], b""
+    except NarwalError as exc:
+        _record(env, exc, fatal=False)
+        env.status = "failed"
+        env.exit_code = exc.exit_code or EXIT_QUERY
+        if pre_session is not None:
+            await pre_session.aclose()
+        _finalize(env)
+        return env
+    except (ValueError, TypeError) as exc:
+        # A payload-builder error, not a protocol failure. Close the read session
+        # so it cannot leak, and report it as a usage error rather than a decode.
+        detail = str(exc) or type(exc).__name__
+        env.fail(UsageError("could not build the control payload", detail=detail, cause=exc))
+        env.status = "failed"
+        env.exit_code = EXIT_USAGE
+        if pre_session is not None:
+            await pre_session.aclose()
+        _finalize(env)
+        return env
+
+    full_topic = runner._topic(short_topic)
+    env.data["action"] = action
+    env.data["topic"] = short_topic
+    env.data["payload_hex"] = payload.hex()
+
+    if dry_run:
+        env.data["dry_run"] = True
+        env.data["sent"] = False
+        if pre_session is not None:
+            await pre_session.aclose()
+        _finalize(env)
+        return env
+
+    result_code: int | None = None
+    outcome = "unknown"
+    try:
+        if pre_session is not None:
+            await pre_session.aclose()
+            pre_session = None
+        control_session = await runner.open_session(allow_control=True)
+        timeout_s = STOP_QUERY_TIMEOUT_S if action == "stop" else None
+        result = await runner.send_control(control_session, short_topic, payload, timeout_s=timeout_s)
+        code, accepted = control_result(result.decoded)
+        result_code = code
+        outcome = "accepted" if accepted else "declined"
+        env.data["result"] = {
+            "code": code,
+            "accepted": accepted,
+            "echo": code is None,
+        }
+        if not accepted:
+            raise CommandNotApplied(
+                f"robot declined {action}",
+                detail=f"result_code={code} topic={short_topic}",
+            )
+    except CommandNotApplied as exc:
+        env.fail(exc)
+        env.status = "failed"
+        env.exit_code = exc.exit_code
+    except NarwalError as exc:
+        env.fail(exc)
+        env.status = "failed"
+        env.exit_code = exc.exit_code
+    finally:
+        if control_session is not None:
+            await control_session.aclose()
+        if pre_session is not None:
+            await pre_session.aclose()
+
+    if not no_audit:
+        try:
+            audit_path = _write_audit(
+                out_dir,
+                _audit_line(
+                    action=action,
+                    short_topic=short_topic,
+                    full_topic=full_topic,
+                    payload=payload,
+                    result_code=result_code,
+                    outcome=outcome,
+                ),
+            )
+            env.artifacts.append({"type": "control_audit", "path": str(audit_path.resolve())})
+        except ArtifactError as exc:
+            # An audit-write failure must not rewrite the command outcome. Record
+            # it as a warning so exit 0 (accepted) or 20 (declined) is preserved.
+            env.warn("audit_write_failed", exc.detail)
+
+    _finalize(env)
+    return env
+
+
+def build_start_payload(
+    room_ids: list[int],
+    map_id: int,
+    *,
+    mode: str,
+    fan: str,
+    water: str,
+    passes: int,
+) -> bytes:
+    from narwal_skill.control import start_clean_payload
+
+    return start_clean_payload(
+        room_ids,
+        map_id,
+        mode=mode,
+        fan=fan,
+        water=water,
+        passes=passes,
+    )
 
 
 async def _fetch_map(
