@@ -1,8 +1,8 @@
 # Testing Strategy & Test Plan — Narwal Local Skill
 
-**Document Version:** 1.0.0
+**Document Version:** 1.1.0
 **Status:** Implemented & Verified
-**Offline Test Suite:** 46 passed, 1 skipped (after review and hardware compatibility fixes)
+**Offline Test Suite:** 80 passed, 1 skipped
 **Hardware Validation:** Smoke verified on Narwal Flow 2 (firmware `v01.09.10.02`)
 
 ---
@@ -15,14 +15,16 @@ Offline unit, loopback and packaging tests exercise failure paths without requir
 tests/
 ├── unit/                 # Fast deterministic logic tests (no network)
 │   ├── test_telemetry_and_map.py # Null/float/fault/coordinate/map tests
-│   ├── test_allowlist_source.py # Send-scope audit
+│   ├── test_allowlist_source.py # Send-scope audit (read / control / deny)
+│   ├── test_control_payload.py  # Control payload bytes and result semantics
 │   ├── test_bounds.py           # Numeric arguments, JSON and packed faults
 │   └── test_wheel_notice.py     # Wheel license/NOTICE verification
 ├── loopback/             # In-process mock WebSocket tests (127.0.0.1)
 │   ├── fake_robot.py         # Synthetic WebSocket peer
 │   ├── frames.py             # Synthetic protobuf/frame builders
 │   ├── test_session.py       # Responses, ACKs, late replies and deadlines
-│   └── test_cli.py           # Commands, JSON, artifact and argument checks
+│   ├── test_cli.py           # Commands, JSON, artifact and argument checks
+│   └── test_control.py       # Control commands, --yes gate, dry-run, audit
 └── hardware/             # Opt-in read-only physical hardware smoke tests
     └── test_live_read.py    # Gated live read validation on Narwal Flow 2
 ```
@@ -41,7 +43,7 @@ uv run pytest -q
 
 **Results:**
 - `ruff check`: All checks passed.
-- `pytest`: **46 passed, 1 skipped** after review and compatibility fixes. The skipped test is `tests/hardware/test_live_read.py::test_live_snapshot_readonly` because hardware testing requires explicit opt-in.
+- `pytest`: **80 passed, 1 skipped**. The skipped test is `tests/hardware/test_live_read.py::test_live_snapshot_readonly` because hardware testing requires explicit opt-in.
 
 ### 2.2. Verified Test Scenarios
 - **Numeric Bounds:** Non-finite and out-of-range timing arguments fail before connecting. Finite coordinate offsets may be negative within their allowed range.
@@ -49,6 +51,8 @@ uv run pytest -q
 - **Empty-Topic Matching:** Single-outstanding query queue correctly resolves `field5` replies with empty topics.
 - **Late Reply Queue Purge:** Query timeouts trigger immediate socket closure and reset, preventing buffered replies from corrupting subsequent queries.
 - **Map & Pillow Integrity:** Synthetic occupancy grids decode cleanly and render PNG artifacts verified by Pillow. Partial position sampling failure preserves map PNG with warning `position_sampling_failed`.
+- **Control Payload Bytes:** The `clean/start_clean` CleanTask encoding is asserted byte-for-byte against a hand-built expected payload; mode/fan/water/passes validation and that `--fan super` is encoded unclamped as `5` are covered.
+- **Control Gating:** A default session refuses control topics; `--yes` is required unless `--dry-run`; `--dry-run` reads identity/status/map but sends no control topic; a declined command exits `20`; the audit JSONL line records topic, payload, and result.
 - **Wheel Packaging:** Built wheel packages `LICENSE`, `NOTICE`, `src/narwal_skill/vendor/NOTICE`, and `py.typed`.
 
 ---
@@ -71,10 +75,14 @@ uv run pytest tests/hardware/ -v
 - **Telemetry Verification:** Missing task progress correctly remained `null`. High-level `is_docked` and `charging_state` remained `null` with raw fields accessible.
 - **Command Scope:** Sent commands were queries, telemetry subscription and heartbeat only. The robot can continue its own existing task; physical state invariance was not measured.
 
+### Control Validation (2026-10-07)
+- `start --dry-run` fetched the live active map (8 rooms) and built the CleanTask payload without sending. The payload decoded to the expected map id, taskType, and per-room params.
+- Procedure for live control: run the command with `--dry-run` first, then with `--yes`; each write appends a line to the audit log. Control topics are not yet hardware validated beyond the read-only dry run.
+
 ---
 
 ## 4. Public Hygiene & Fixture Rules
 
 1. **Synthetic Fixtures:** Toy grids and fake per-device IDs are used. `QxMSPG6VSO` is a public model key, not a synthetic device identifier.
 2. **RFC 5737 Documentation IPs:** Offline tests and CLI help tests use RFC 5737 addresses (`192.0.2.10`, `198.51.100.0/24`) or local loopback (`127.0.0.1`).
-3. **Artifact Isolation:** Test runs write artifacts to temporary directories (`tmp_path`) or gitignored `artifacts/`.
+3. **Artifact Isolation:** Test runs write artifacts to temporary directories (`tmp_path`) or gitignored `artifacts/`. Audit logs carry the device id in the topic and stay local.

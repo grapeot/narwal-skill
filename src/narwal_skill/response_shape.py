@@ -67,6 +67,32 @@ def validate_query_response(short_topic: str, decoded: dict[str, Any]) -> None:
     )
 
 
+def validate_control_response(short_topic: str, decoded: dict[str, Any]) -> None:
+    """Raise if this payload cannot be the answer to a control command.
+
+    Control replies are a TaskResult: field 1 is an integer result code, a
+    config echo for room-clean. Codes 2/3/4 are valid declines here (not query
+    rejections). Booleans, unknown ints, and unrelated shapes close the socket.
+    """
+    from narwal_skill.control import (
+        ACCEPTED_RESULT_CODES,
+        DECLINED_RESULT_CODES,
+        control_result,
+    )
+
+    if not isinstance(decoded, dict):
+        raise DecodeError(
+            f"{short_topic} response was not a message",
+            detail=f"decoded type {type(decoded).__name__}",
+        )
+    code, _accepted = control_result(decoded)
+    if code is not None and code not in ACCEPTED_RESULT_CODES | DECLINED_RESULT_CODES:
+        raise DecodeError(
+            f"{short_topic} returned an unrecognized result code",
+            detail=f"result_code={code}",
+        )
+
+
 def _require_accepted_ack(decoded: dict[str, Any]) -> None:
     """Accept an integer result code or the observed publish echo. Not an arbitrary dict."""
     code = decoded.get("1")

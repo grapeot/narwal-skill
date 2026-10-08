@@ -359,3 +359,58 @@ def test_allowlist_has_no_actuation() -> None:
     assert "developer/take_picture" not in ALLOWED_SEND_TOPICS
     assert "common/reboot" not in ALLOWED_SEND_TOPICS
     assert "clean/start_clean" not in ALLOWED_SEND_TOPICS
+
+
+async def test_default_session_refuses_control_topic() -> None:
+    from narwal_skill.errors import ReadOnlyViolation
+
+    async def handler(ws, raw, short, conn):
+        await ws.send(field5(b"\x08\x01"))
+
+    robot = FakeRobot(handler)
+    await robot.start()
+    try:
+        session = ReadOnlySession(
+            url=f"ws://127.0.0.1:{robot.port}",
+            connect_timeout_s=1.0,
+            deadline=time.monotonic() + 5,
+            allow_control=False,
+        )
+        await session.connect()
+        with pytest.raises(ReadOnlyViolation):
+            await session.query(
+                "task/pause",
+                full_topic="/QxMSPG6VSO/fake-device-001/task/pause",
+                timeout_s=1.0,
+                control=True,
+            )
+        await session.aclose()
+    finally:
+        await robot.stop()
+
+
+async def test_control_session_sends_allowlisted_control_topic() -> None:
+    async def handler(ws, raw, short, conn):
+        await ws.send(field5(b"\x08\x01"))
+
+    robot = FakeRobot(handler)
+    await robot.start()
+    try:
+        session = ReadOnlySession(
+            url=f"ws://127.0.0.1:{robot.port}",
+            connect_timeout_s=1.0,
+            deadline=time.monotonic() + 5,
+            allow_control=True,
+        )
+        await session.connect()
+        result = await session.query(
+            "task/pause",
+            full_topic="/QxMSPG6VSO/fake-device-001/task/pause",
+            timeout_s=1.0,
+            control=True,
+        )
+        assert result.decoded.get("1") == 1
+        assert "task/pause" in session.sent_topics
+        await session.aclose()
+    finally:
+        await robot.stop()

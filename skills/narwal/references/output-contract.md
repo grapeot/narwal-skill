@@ -62,12 +62,13 @@ When the robot closes a connection due to another concurrent connection from the
 | Exit Code | Identifier | Trigger Conditions |
 |---|---|---|
 | `0` | `EXIT_OK` | Complete success (`status == "ok"`). |
-| `2` | `EXIT_USAGE` | Invalid CLI options, non-finite float bounds (`NaN`, `inf`), or missing required connection parameters. |
+| `2` | `EXIT_USAGE` | Invalid CLI options, non-finite float bounds (`NaN`, `inf`), missing required connection parameters, or a control command without `--yes`. |
 | `3` | `EXIT_PARTIAL` | Result produced despite partial failures (e.g. identity query succeeded, but follow-up queries timed out; or map PNG was saved but position sampling timed out). |
 | `10` | `EXIT_TRANSPORT` | TCP socket refused, host unreachable, or WebSocket HTTP 101 handshake failure. |
 | `11` | `EXIT_QUERY` | Query timeout, rejected response payload, or overall setup `--budget` expired. |
 | `12` | `EXIT_DECODE` | Binary protobuf decoding failure or frame framing error. |
-| `13` | `EXIT_ARTIFACT` | Disk I/O error writing PNG or JSONL artifact. |
+| `13` | `EXIT_ARTIFACT` | Disk I/O error writing a PNG or JSONL artifact. An audit-write failure is a non-fatal `audit_write_failed` warning and preserves the command exit code. |
+| `20` | `EXIT_COMMAND` | A control command reached the robot and the robot declined it (`NOT_APPLICABLE`, `CONFLICT`, `NOT_READY`). |
 
 ---
 
@@ -147,3 +148,34 @@ Each `map/display_map` broadcast line includes:
 
 - When `raw_x` and `raw_y` are 0 with timestamp 0 or absent, `lost_context` is set to `true`.
 - The `--raw` flag appends a companion raw hex capture JSONL. Because raw captures and rendered maps contain private home floor plans, all watch recordings must remain in local private directories.
+
+---
+
+## 7. Control Command Output
+
+Control commands (`pause`, `resume`, `stop`, `dock`, `start`, `clean`) emit the same envelope. `data` carries:
+
+```json
+{
+  "preflight": {
+    "battery_percent": 63.0,
+    "working_mode": "cleaning_alt",
+    "working_mode_code": 5,
+    "fault_codes": [],
+    "note": "Informational only. The robot arbitrates whether the command applies."
+  },
+  "action": "start",
+  "topic": "clean/start_clean",
+  "payload_hex": "0ab601...",
+  "target_rooms": [1, 2, 3],
+  "result": { "code": 1, "accepted": true, "echo": false },
+  "dry_run": false,
+  "sent": true
+}
+```
+
+- `--dry-run` sets `dry_run: true` and `sent: false` and sends no control topic. It still opens a read session to fetch identity/status (and the active map for `start`/`clean`) so the payload can be built.
+- `result.code` is the robot result code (`1` success, `6` applied, `2` not applicable, `3` conflict, `4` not ready). `result.echo` is `true` when the robot answered with the room-clean config echo (`code` is then `null`).
+- A declined command (`2`/`3`/`4`) sets `errors[].code = "command_not_applied"` and exits `20`.
+- Unless `--no-audit`, one JSONL line is appended to `<out-dir>/control_audit.jsonl`: `observed_at`, `action`, `topic`, `full_topic`, `payload_hex`, `result_code`, `outcome`. The path is returned in `artifacts` as `control_audit`.
+- `clean/start_clean` applies only while the robot is docked; a `NOT_READY` answer is the robot declining, not an error in the tool.

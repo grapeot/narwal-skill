@@ -9,6 +9,7 @@ EXIT_TRANSPORT = 10
 EXIT_QUERY = 11
 EXIT_DECODE = 12
 EXIT_ARTIFACT = 13
+EXIT_COMMAND = 20
 
 SAME_IP_CLOSE = "connection with same ip, close old one"
 
@@ -72,6 +73,21 @@ class ConnectionCap(QueryError):
 
 class BudgetExceeded(QueryError):
     code = "budget_exceeded"
+
+
+class CommandNotApplied(NarwalError):
+    """The command reached the robot and the robot declined it.
+
+    Not a transport or decode failure: result codes 2/3/4 are valid answers.
+    """
+
+    exit_code = EXIT_COMMAND
+    code = "command_not_applied"
+
+
+class ConfirmationRequired(NarwalError):
+    exit_code = EXIT_USAGE
+    code = "confirmation_required"
 
 
 def exception_payload(exc: BaseException) -> dict[str, str]:

@@ -1,4 +1,9 @@
-"""Hard send allowlist. The transport refuses every other topic."""
+"""Hard send allowlist. The transport refuses every other topic.
+
+Two tiers. Read topics are always allowed. Control topics (pause / resume /
+stop / dock / start / clean) require the caller to opt in explicitly, so a
+default session cannot put an actuation topic on the wire even by accident.
+"""
 
 from __future__ import annotations
 
@@ -17,19 +22,25 @@ ALLOWED_SEND_TOPICS = frozenset(
     }
 )
 
+# Actuation topics. Sent only from a session opened with allow_control=True.
+CONTROL_SEND_TOPICS = frozenset(
+    {
+        "task/pause",
+        "task/resume",
+        "task/force_end",
+        "supply/recall",
+        "clean/start_clean",
+    }
+)
+
 # Topics that must never be sent, even if a caller names them.
 FORBIDDEN_SEND_TOPICS = frozenset(
     {
-        "clean/start_clean",
         "clean/plan/start",
         "clean/easy_clean/start",
         "clean/set_fan_level",
         "clean/set_mop_humidity",
-        "task/pause",
-        "task/resume",
-        "task/force_end",
         "task/cancel",
-        "supply/recall",
         "supply/wash_mop",
         "supply/wash_mop_by_robot_status",
         "supply/dry_mop",
@@ -61,11 +72,22 @@ SUBSCRIBE_TOPICS = (
 UNACKNOWLEDGED_SEND_TOPICS = frozenset({"status/app_status_heartbeat"})
 
 
-def require_send_topic(short_topic: str) -> str:
-    """Reject any topic outside the read-only allowlist."""
-    if short_topic in FORBIDDEN_SEND_TOPICS or short_topic not in ALLOWED_SEND_TOPICS:
+def require_send_topic(short_topic: str, *, control: bool = False) -> str:
+    """Reject any topic outside the allowlist for the current mode.
+
+    Read topics are always allowed. Control topics require control=True so a
+    default session can never reach an actuation topic.
+    """
+    if short_topic in FORBIDDEN_SEND_TOPICS:
         raise ReadOnlyViolation(
-            f"refusing to send topic {short_topic!r}; not in the read-only allowlist",
+            f"refusing to send topic {short_topic!r}; it is on the permanent deny list",
             detail=short_topic,
         )
-    return short_topic
+    if short_topic in ALLOWED_SEND_TOPICS:
+        return short_topic
+    if control and short_topic in CONTROL_SEND_TOPICS:
+        return short_topic
+    raise ReadOnlyViolation(
+        f"refusing to send topic {short_topic!r}; not allowed in this mode",
+        detail=short_topic,
+    )

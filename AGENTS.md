@@ -2,13 +2,15 @@
 
 ## Project Identity & Scope
 
-**Narwal Local Skill** is a lightweight, read-only Python CLI (`narwal-local`) and agent skill for Narwal robot vacuums communicating via the local WebSocket protocol on port 9002. It requires no Home Assistant instance, no cloud accounts, and no proprietary vendor bridges.
+**Narwal Local Skill** is a lightweight Python CLI (`narwal-local`) and agent skill for Narwal robot vacuums communicating via the local WebSocket protocol on port 9002. It requires no Home Assistant instance, no cloud accounts, and no proprietary vendor bridges.
+
+The default mode is read-only. An opt-in control mode (pause / resume / stop / dock / start / clean) is reachable only from a session opened for control, behind an explicit `--yes` confirmation and an audit log.
 
 - **Working Language:** English for all source code, docstrings, comments, agent skills, documentation, and Git commits.
-- **Licensing & Distribution:** MIT license; public repository `https://github.com/grapeot/narwal-skill`. Initial publication and downstream catalog PRs were explicitly authorized on 2026-10-06. Later commits, pushes and public actions still require user authorization.
+- **Licensing & Distribution:** MIT license; public repository `https://github.com/grapeot/narwal-skill`. Initial publication and downstream catalog PRs were explicitly authorized on 2026-10-06. The control extension was authorized on 2026-10-07. Later commits, pushes and public actions still require user authorization.
 - **Branch Protection:** Default branch `master` requires pull requests, zero required reviewers, and administrator enforcement; do not bypass protection.
-- **Hardware Validation Scope:** Direct physical hardware validation is strictly scoped to the **Narwal Flow 2** (firmware `v01.09.10.02` smoke tested). Other WebSocket-enabled models inherit candidate compatibility from upstream protocol documentation, not our own physical validation.
-- **Operational Safety Boundary:** Strictly read-only and diagnostic. The CLI implements an allowlist of 6 query topics. Under no circumstances should this project implement motion, cleaning (`start`, `stop`, `pause`, `clean_area`), docking, rebooting, firmware update, map modification, or arbitrary raw command injection.
+- **Hardware Validation Scope:** Direct physical hardware validation is strictly scoped to the **Narwal Flow 2** (firmware `v01.09.10.02` smoke tested). Other WebSocket-enabled models inherit candidate compatibility from upstream protocol documentation, not our own physical validation. The control payloads inherit upstream community research and are not hardware validated here.
+- **Operational Safety Boundary:** Read-only by default. The read allowlist is 6 query topics. A separate control allowlist (pause / resume / stop / dock / start / clean) is reachable only with `allow_control=True`. A permanent deny list (`common/reboot`, `common/shutdown`, `common/yell`, camera/developer topics, live parameter mutation, dock maintenance, `task/cancel`, `clean/plan/start`, `clean/easy_clean/start`, raw injection) is never sent under any flag.
 
 ---
 
@@ -86,6 +88,7 @@ Because this project is prepared for an eventual open-source MIT release on GitH
    - `map`: Fetch active map, render a clean visual PNG, and output structured room/grid metadata.
    - `watch`: Stream live telemetry with an explicit, mandatory time-bound duration (`--duration`, max 300s) and structured JSONL logging.
    - `doctor`: Step-by-step diagnostic probe separating transport errors from query/parse failures.
+   - `pause` / `resume` / `stop` / `dock` / `start` / `clean`: Opt-in control commands. Each requires `--yes`; `--dry-run` previews without sending; writes append to `control_audit.jsonl`.
 3. **CLI I/O Contract:**
    - **stdout:** Machine-readable versioned JSON envelope (`status`: `ok` | `partial` | `failed`, `observed_at`, `device`, `data`, `warnings`, `errors`, `artifacts`).
    - **stderr:** Human-readable diagnostic progress logs and error descriptions.
@@ -106,4 +109,4 @@ Because this project is prepared for an eventual open-source MIT release on GitH
 
 - **Document Before Doing:** Keep `docs/working.md` updated with every substantive change, including the Changelog, Current Status, and Lessons Learned.
 - **No Unsolicited Commits or Pushes:** Do not run `git commit`, `git push`, or configure remote origins unless the user explicitly gives a direct command to do so.
-- **Testing Discipline:** Run meaningful offline loopback tests. The latest review/compatibility-fix run has 46 passed and 1 opt-in skip; Flow 2 smoke checks were rerun after response guards changed. Never invent results or treat one firmware's smoke test as universal validation.
+- **Testing Discipline:** Run meaningful offline loopback tests. The current suite has 80 passed and 1 opt-in skip; Flow 2 smoke checks were rerun after response guards changed. Never invent results or treat one firmware's smoke test as universal validation.

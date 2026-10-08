@@ -9,6 +9,7 @@ from typing import Any
 
 from narwal_skill.errors import (
     EXIT_ARTIFACT,
+    EXIT_COMMAND,
     EXIT_DECODE,
     EXIT_OK,
     EXIT_PARTIAL,
@@ -96,6 +97,10 @@ def exit_code_for(status: str, errors: list[dict[str, str]]) -> int:
         return EXIT_ARTIFACT
     if codes & {"query", "query_timeout", "query_rejected", "budget_exceeded"}:
         return EXIT_QUERY
+    if "confirmation_required" in codes:
+        return EXIT_USAGE
+    if "command_not_applied" in codes:
+        return EXIT_COMMAND
     return EXIT_QUERY
 
 

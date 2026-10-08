@@ -1,6 +1,8 @@
 # Narwal Local Skill
 
-A lightweight, cloud-independent, read-only Python CLI (`narwal-local`) and agent skill for Narwal robot vacuums communicating over the local WebSocket protocol on port 9002.
+A lightweight, cloud-independent Python CLI (`narwal-local`) and agent skill for Narwal robot vacuums communicating over the local WebSocket protocol on port 9002.
+
+The default mode is read-only. An opt-in control mode adds explicitly confirmed pause / resume / stop / dock / start commands.
 
 No Home Assistant instance, no cloud accounts, and no proprietary vendor bridges required.
 
@@ -8,18 +10,30 @@ No Home Assistant instance, no cloud accounts, and no proprietary vendor bridges
 
 ## Overview
 
-**Narwal Local Skill** provides direct, scriptable local access to Narwal robot vacuums. Designed for developers, automation scripts, and AI coding agents, it queries robot telemetry, extracts visual maps with room segmentation, streams live status updates, and runs comprehensive connection diagnostics without modifying robot state.
+**Narwal Local Skill** provides direct, scriptable local access to Narwal robot vacuums. Designed for developers, automation scripts, and AI coding agents, it queries robot telemetry, extracts visual maps with room segmentation, streams live status updates, and runs comprehensive connection diagnostics. An opt-in control mode adds a small, explicitly confirmed set of write commands for intervention and starting a clean.
 
 ### CLI Subcommands (`narwal-local`)
+
+**Read-only (default):**
 
 - **`snapshot`**: Single-shot query combining device identity, firmware version, battery level, operational working mode, and active cleaning task telemetry.
 - **`map`**: Retrieves the active floor plan grid, renders a visual PNG artifact (`artifacts/map_<utc>_<token>.png`), and outputs structured room segmentation metadata.
 - **`watch`**: Streams real-time telemetry updates for an explicitly bounded duration (`--duration <sec>`, required, max 300s) and writes a structured JSONL artifact.
 - **`doctor`**: Runs sequential diagnostic checks across TCP port reachability, WebSocket handshake, device identity bytes, and base status queries.
 
+**Control (opt-in, requires `--yes`):**
+
+- **`pause` / `resume` / `stop` / `dock`**: Pause, resume, force-stop, or send the robot back to its dock.
+- **`start`**: Start a whole-house clean over every room on the active map.
+- **`clean --rooms ID,...`**: Start a clean for selected rooms.
+
+Control commands require `--yes` and write an audit line unless `--no-audit` is passed. `--dry-run` builds the payload and records the topic and payload hex without sending a control topic.
+
 ### Operational Safety Boundaries
 
-- **Strictly Read-Only:** The CLI implements an allowlist of 6 query topics. It contains zero actuation commands (`start`, `stop`, `pause`, `clean_area`, `dock`), parameter mutations, camera streams, reboot routines, or raw command injection.
+- **Read-only by default:** The default session allows an allowlist of query topics only. Control topics are reachable only from a session opened for control, which every control command does explicitly.
+- **Permanently forbidden:** reboot, shutdown, yell, camera, developer, live parameter mutation, dock maintenance, `task/cancel`, `clean/plan/start`, `clean/easy_clean/start`, and any raw command injection. These are on a deny list that no flag relaxes.
+- **Confirmation and audit:** Every write command needs `--yes`; `--dry-run` previews without sending. Writes append to a gitignored `control_audit.jsonl`.
 - **Machine-Readable Envelope:** Commands emit a single versioned JSON document (`schema_version: "1.0"`) to `stdout` and human diagnostics to `stderr`.
 - **Accurate Telemetry Semantics:** Missing or unpolled attributes emit explicit JSON `null`, never defaulting to numerical `0`.
 
@@ -106,15 +120,36 @@ narwal-local watch --host 192.0.2.10 --product-key QxMSPG6VSO --duration 30 --ou
 narwal-local doctor --host 192.0.2.10 --product-key QxMSPG6VSO
 ```
 
+### Control Commands (Opt-In)
+
+Control commands send write topics. Preview without sending, then confirm with `--yes`:
+
+```bash
+# Preview a whole-house clean: builds the payload, sends no control topic
+narwal-local start --host 192.0.2.10 --product-key QxMSPG6VSO --dry-run
+
+# Pause the current task and write an audit line
+narwal-local pause --host 192.0.2.10 --product-key QxMSPG6VSO --yes
+
+# Send the robot back to its dock
+narwal-local dock --host 192.0.2.10 --product-key QxMSPG6VSO --yes
+
+# Clean selected rooms (ids come from the active map)
+narwal-local clean --host 192.0.2.10 --product-key QxMSPG6VSO --rooms 3,5 --mode vacuum_and_mop --yes
+```
+
+`clean/start_clean` only applies while the robot is on its dock; otherwise the robot answers `NOT_READY`. The CLI reports the robot's answer rather than guessing.
+
 ### Exit Codes
 
 - `0`: Operation completed successfully (`status: "ok"`).
-- `2`: Invalid CLI arguments, non-finite bounds, or missing configuration (`status: "failed"`).
+- `2`: Invalid CLI arguments, non-finite bounds, missing configuration, missing `--yes`, or an unknown `--rooms` id (`status: "failed"`).
 - `3`: Partial success; primary identity or map image retrieved, but sub-queries timed out (`status: "partial"`).
 - `10`: Network transport error (TCP connection refused, host unreachable, WebSocket handshake failure).
 - `11`: Query timeout, rejected response payload, or overall setup budget exceeded.
 - `12`: Binary protobuf decoding failure or frame corruption.
 - `13`: File system artifact write failure.
+- `20`: Control command reached the robot and the robot declined it (`NOT_APPLICABLE`, `CONFLICT`, `NOT_READY`).
 
 ---
 

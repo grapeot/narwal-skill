@@ -1,11 +1,11 @@
 ---
 name: narwal-local
-description: Read-only status inspection, floor plan maps, bounded live telemetry, and connection diagnostics for port-9002 WebSocket Narwal robot vacuums. Flow 2 smoke tested; other compatible Flow/Freo models are candidates.
+description: Read-only status inspection, floor plan maps, bounded live telemetry, and connection diagnostics for port-9002 WebSocket Narwal robot vacuums, plus an opt-in confirmed control mode (pause, resume, stop, dock, start/room clean). Flow 2 smoke tested; other compatible Flow/Freo models are candidates.
 ---
 
 # Narwal Local Skill
 
-Provide AI coding and automation agents with deterministic, read-only local access to Narwal robot vacuums over the local WebSocket protocol on TCP port 9002 without Home Assistant or vendor cloud dependencies.
+Provide AI coding and automation agents with deterministic local access to Narwal robot vacuums over the local WebSocket protocol on TCP port 9002 without Home Assistant or vendor cloud dependencies. Read-only inspection is the default; an opt-in control mode adds a small, explicitly confirmed set of write commands.
 
 ## Goal & Acceptance Criteria
 
@@ -13,20 +13,22 @@ When invoked, the agent executes `narwal-local` subcommands to observe device st
 1. **Valid JSON Output:** The CLI emits a single versioned JSON envelope (`schema_version: "1.0"`) to `stdout` with `status: "ok"` or `"partial"`, or clean error categorization on `"failed"`.
 2. **Freshness Verification:** The `observed_at` UTC timestamp reflects the current command run.
 3. **Null vs. Zero Semantic Integrity:** Telemetry metrics that are unpolled, unavailable, or unsupported by the model remain explicit JSON `null`, never numerical `0` or empty strings.
-4. **Artifact Verification:** For `map`, the PNG exists and its dimensions equal grid dimensions times render scale. For `watch`, the JSONL exists and any records parse; an empty recording is possible and means no telemetry observed.
+4. **Artifact Verification:** For `map`, the PNG exists and its dimensions equal grid dimensions times render scale. For `watch`, the JSONL exists and any records parse; an empty recording is possible and means no telemetry observed. For control commands, the audit JSONL line records the topic, payload, and result.
 
 ## Capability Scope & Safety Boundaries
 
 - **Transport:** Local WebSocket connection directly on TCP port 9002 (`ws://<host>:9002`).
-- **Hardware Validation Scope:** Direct physical hardware validation is strictly scoped to the **Narwal Flow 2** (firmware `v01.09.10.02` smoke tested). Other models inherit candidate status from upstream community protocol research, not local hardware certification.
+- **Hardware Validation Scope:** Direct physical hardware validation is strictly scoped to the **Narwal Flow 2** (firmware `v01.09.10.02` smoke tested). Other models inherit candidate status from upstream community protocol research, not local hardware certification. Control payloads are not hardware validated here.
 - **Candidate Models (Upstream Reports):** Flow AX12, Freo Z10 Ultra (CX4), Freo Z10 Pro/Turbo (AX26), Freo X10 Pro (AX15), Freo 20, Freo 20 Edge, and Freo Z Ultra (CX7; requires explicit device ID, no broadcast).
 - **Incompatible Models:** Models on other ports (Freo X Ultra uses ZeroMQ on port 6789), cloud-only models (Freo X Plus, J1/T10, J4), or models refusing port 9002 (standard Freo Z10).
-- **Strictly Read-Only:** The CLI and library strictly enforce a send allowlist of 6 query and telemetry topics. Under no circumstances does this skill support motion, cleaning (`start`, `stop`, `pause`, `clean_area`), docking, rebooting, firmware update, map editing, or arbitrary raw command injection.
+- **Read-only by default:** The default session enforces an allowlist of read/query topics. 
+- **Opt-in control:** `pause`, `resume`, `stop`, `dock`, `start`, and `clean` are reachable only from a session opened for control. Every control command requires `--yes`; `--dry-run` previews without sending; writes append to `control_audit.jsonl`.
+- **Permanently forbidden (no flag relaxes this):** reboot, shutdown, yell, `common/notify_app_event`, camera and developer topics, live parameter mutation (`clean/set_fan_level`, `clean/set_mop_humidity`), dock maintenance (`supply/wash_mop`, `supply/dry_*`, `supply/dust_gathering`, `supply/ambient_light_ctrl`), `task/cancel`, `clean/plan/start`, `clean/easy_clean/start`, and arbitrary raw command injection.
 
 ## Available Tools & Resources
 
 - **CLI Executable:** `narwal-local` (available via the project virtual environment `.venv/bin/narwal-local` or PATH).
-- **Subcommands:** `snapshot`, `map`, `watch`, `doctor`.
+- **Subcommands:** `snapshot`, `map`, `watch`, `doctor`, plus opt-in `pause`, `resume`, `stop`, `dock`, `start`, `clean`.
 - **Environment Variables:**
   - `NARWAL_HOST`: Robot IP address or hostname (required; no default).
   - `NARWAL_PORT`: WebSocket port (default: `9002`).
@@ -49,6 +51,11 @@ Choose the appropriate subcommand based on the specific operational goal. Do not
 | Inspect floor plan, rooms, or obstacle map | `narwal-local map` | `--host HOST [--product-key KEY] [--out-dir artifacts]` | Downloads active occupancy grid, writes a timestamped PNG (`artifacts/map_<utc>_<token>.png`), and returns room metadata. |
 | Stream live telemetry during cleaning | `narwal-local watch` | `--host HOST [--product-key KEY] --duration SECONDS` | **Mandatory duration** (`0 < duration <= 300`). Writes structured telemetry to a unique JSONL artifact. |
 | Troubleshoot connection or timeout errors | `narwal-local doctor` | `--host HOST [--product-key KEY]` | Sequential diagnostic probe: TCP reachability -> WebSocket handshake -> device identity query -> base status query. Ping alone is not treated as success. |
+| Pause / resume the current task | `narwal-local pause` / `resume` | `[--yes] [--dry-run]` | Sends `task/pause` / `task/resume`. Exit `20` if the robot declines. |
+| Stop the current task | `narwal-local stop` | `[--yes] [--dry-run]` | Sends `task/force_end`. The robot stops before answering, so this uses a longer timeout. |
+| Send the robot to its dock | `narwal-local dock` | `[--yes] [--dry-run]` | Sends `supply/recall`. |
+| Start a whole-house clean | `narwal-local start` | `[--yes] [--dry-run] [--mode M] [--fan F] [--water W] [--passes N]` | Enumerates every room on the active map and sends `clean/start_clean`. Only applies while docked. |
+| Clean selected rooms | `narwal-local clean` | `--rooms ID[,ID...] [--yes] [same options]` | Sends `clean/start_clean` for the selected rooms; ids are validated against the active map. |
 
 ### Command Selection Rules
 - **Default to `snapshot`:** Use it for battery and reported task status. The default listen is 3 seconds; setup and queries have a separate budget, not a guaranteed few-second response.
@@ -56,6 +63,7 @@ Choose the appropriate subcommand based on the specific operational goal. Do not
 - **`watch` requires an explicit, finite duration:** The `--duration` parameter is strictly required (maximum 300 seconds). Never attempt to stream indefinitely. Watch `--duration` runs after connection setup and is not deducted from the setup `--budget`.
 - **Use `doctor` on connection failures:** If `snapshot` or `map` fails with exit code 10 or 11, run `doctor` to pinpoint whether the failure is at the TCP socket, WebSocket handshake, or application query layer.
 - **Discovery Fallback:** If the product key is unknown on a Flow 2 device, pass `--discover` to probe up to 3 known Flow 2 product keys serially within the shared budget.
+- **Control commands need `--yes` and send real write traffic:** Never send a control command speculatively. Run with `--dry-run` first to confirm the topic and payload, then re-run with `--yes`. `clean/start_clean` only applies while the robot is docked; a `NOT_READY` (exit 20) answer is the robot declining, not a bug. Do not retry a declined command in a loop.
 
 ## Execution Parameters & Safety Bounds
 
@@ -119,12 +127,13 @@ The CLI writes one JSON envelope to `stdout` (`schema_version: "1.0"`) and diagn
 | Code | Name | Description |
 |---|---|---|
 | `0` | `EXIT_OK` | Command completed without recorded errors; telemetry may still be missing. Inspect warnings and null fields. |
-| `2` | `EXIT_USAGE` | Invalid CLI arguments, non-finite bounds, or missing host/product key. |
+| `2` | `EXIT_USAGE` | Invalid CLI arguments, non-finite bounds, missing host/product key, or a control command missing `--yes`. |
 | `3` | `EXIT_PARTIAL` | Partial success; basic identity retrieved or map image saved, but secondary queries or position sampling timed out. |
 | `10` | `EXIT_TRANSPORT` | TCP connection refused, host unreachable, or WebSocket handshake failed. |
 | `11` | `EXIT_QUERY` | Query timeout, rejected response code, or budget exceeded. |
 | `12` | `EXIT_DECODE` | Protobuf payload decode error or frame corruption. |
-| `13` | `EXIT_ARTIFACT` | File system error writing PNG or JSONL artifact. |
+| `13` | `EXIT_ARTIFACT` | File system error writing a PNG or JSONL artifact. An audit-write failure is a non-fatal warning and preserves the command exit code. |
+| `20` | `EXIT_COMMAND` | A control command reached the robot and the robot declined it (`NOT_APPLICABLE`, `CONFLICT`, `NOT_READY`). |
 
 ## Known Protocol Quirks & Genuine Pitfalls
 

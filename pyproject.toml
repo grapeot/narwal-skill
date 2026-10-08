@@ -1,7 +1,7 @@
 [project]
 name = "narwal-skill"
-version = "0.1.0"
-description = "Read-only local CLI for Narwal vacuums on WebSocket port 9002"
+version = "0.2.0"
+description = "Local CLI for Narwal vacuums on WebSocket port 9002; read-only by default with an opt-in control mode"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
