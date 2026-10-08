@@ -149,3 +149,7 @@ The following empirical protocol facts and engineering lessons were verified dur
   - Fixed an audit-write failure overriding the command exit code (0 / 20) to 3; it now adds an `audit_write_failed` warning.
   - Corrected `--dry-run` wording in the docs: it opens a read session and fetches identity/status/map to build the payload, but sends no control topic.
   - Hardened the payload-build path so a builder `ValueError` cannot leak the session; de-duplicated `--rooms`; removed a dead `default=None` and a duplicate `return`; bumped to `0.2.0`.
+- **2026-10-07 (Task & Judgment Layer):**
+  - Added `docs/tasks.md`: a task-and-judgment guide that closes the gap between the CLI's low-level primitives and real tasks. It covers state reading (which fields to trust, which never to trust), task recipes (confirm state, is-it-stuck, start, intervene, watch), failure/exit-code handling, explicit product gaps, and where each artifact lives.
+  - Rewrote the root skill's decision section from a per-command lookup into a task-first, judgment-first playbook: the statelessness rule, the robot-is-authority rule, the fields not to trust, a short task playbook, and an explicit "cannot do" list.
+  - Kept `README.md`, `docs/control.md`, and `references/output-contract.md` as the reference layer; the new task layer points at them rather than duplicating.

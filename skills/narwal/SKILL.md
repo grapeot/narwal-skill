@@ -40,30 +40,68 @@ When invoked, the agent executes `narwal-local` subcommands to observe device st
 - **Detailed References:**
   - [compatibility.md](./references/compatibility.md) — Model compatibility matrix, port specifications, and network routing rules.
   - [output-contract.md](./references/output-contract.md) — Detailed JSON schema, telemetry mapping, exit codes, and coordinate policies.
+  - Project `docs/tasks.md` — Task-and-judgment guide (state reading, task recipes, product gaps) for human readers.
 
-## Task-to-Command Decision Guide
+## The Core Rule: The Robot Is the Authority
 
-Choose the appropriate subcommand based on the specific operational goal. Do not run rigid multi-step procedures when a single command answers the question:
+The CLI is stateless. Each invocation sends one action or one query and disconnects. It keeps no history and knows nothing about a prior run. Every judgment is made from the JSON returned by the current call.
 
-| User Intent | Command | Key Flags & Behavior | Expected Outcome |
-|---|---|---|---|
-| Quick status, battery, or active clean check | `narwal-local snapshot` | `--host HOST [--product-key KEY] [--listen-seconds 3]` | Identity, battery, qualified mode and available task metrics; charging/docking interpretations remain unknown. |
-| Inspect floor plan, rooms, or obstacle map | `narwal-local map` | `--host HOST [--product-key KEY] [--out-dir artifacts]` | Downloads active occupancy grid, writes a timestamped PNG (`artifacts/map_<utc>_<token>.png`), and returns room metadata. |
-| Stream live telemetry during cleaning | `narwal-local watch` | `--host HOST [--product-key KEY] --duration SECONDS` | **Mandatory duration** (`0 < duration <= 300`). Writes structured telemetry to a unique JSONL artifact. |
-| Troubleshoot connection or timeout errors | `narwal-local doctor` | `--host HOST [--product-key KEY]` | Sequential diagnostic probe: TCP reachability -> WebSocket handshake -> device identity query -> base status query. Ping alone is not treated as success. |
-| Pause / resume the current task | `narwal-local pause` / `resume` | `[--yes] [--dry-run]` | Sends `task/pause` / `task/resume`. Exit `20` if the robot declines. |
-| Stop the current task | `narwal-local stop` | `[--yes] [--dry-run]` | Sends `task/force_end`. The robot stops before answering, so this uses a longer timeout. |
-| Send the robot to its dock | `narwal-local dock` | `[--yes] [--dry-run]` | Sends `supply/recall`. |
-| Start a whole-house clean | `narwal-local start` | `[--yes] [--dry-run] [--mode M] [--fan F] [--water W] [--passes N]` | Enumerates every room on the active map and sends `clean/start_clean`. Only applies while docked. |
-| Clean selected rooms | `narwal-local clean` | `--rooms ID[,ID...] [--yes] [same options]` | Sends `clean/start_clean` for the selected rooms; ids are validated against the active map. |
+Two consequences drive everything below:
+- **You cannot answer "why did it stop before I got here" from a single snapshot.** Use a bounded `watch` window to see it live, or read the App's task history. This tool has no history.
+- **The robot decides whether a command applies.** A valid command can be declined (`NOT_READY` / `CONFLICT` / `NOT_APPLICABLE`, exit `20`). That is an answer, not a bug. Never loop-retry a declined command.
 
-### Command Selection Rules
-- **Default to `snapshot`:** Use it for battery and reported task status. The default listen is 3 seconds; setup and queries have a separate budget, not a guaranteed few-second response.
-- **Use `map` only when a visual floor plan or room layout is needed:** Map retrieval downloads and rasterizes large grid payloads. Do not run `map` merely to check battery level.
-- **`watch` requires an explicit, finite duration:** The `--duration` parameter is strictly required (maximum 300 seconds). Never attempt to stream indefinitely. Watch `--duration` runs after connection setup and is not deducted from the setup `--budget`.
-- **Use `doctor` on connection failures:** If `snapshot` or `map` fails with exit code 10 or 11, run `doctor` to pinpoint whether the failure is at the TCP socket, WebSocket handshake, or application query layer.
-- **Discovery Fallback:** If the product key is unknown on a Flow 2 device, pass `--discover` to probe up to 3 known Flow 2 product keys serially within the shared budget.
-- **Control commands need `--yes` and send real write traffic:** Never send a control command speculatively. Run with `--dry-run` first to confirm the topic and payload, then re-run with `--yes`. `clean/start_clean` only applies while the robot is docked; a `NOT_READY` (exit 20) answer is the robot declining, not a bug. Do not retry a declined command in a loop.
+Read the field-level interpretation rules before acting on any status; a task-and-judgment guide lives at `docs/tasks.md` in the project. The essentials:
+
+### Fields you must not trust blindly
+- **`is_docked` and `charging_state` are always `null`.** Raw codes are in `dock_raw` / `charging_status_raw` and vary by firmware. To tell whether it is docked or charging, use the **battery trend** (rising across a `watch` window or between snapshots), not these fields.
+- **Mode `5` (`cleaning_alt`) is not proof of being stuck.** It may be a normal clean. To judge stuck, watch `map/display_map` position over time (see "Is it stuck / why did it stop").
+- **`task.progress.progress_percent` is not an ETA.** It is a reported completion percent. On non-Flow-2 models it may be unnormalized.
+- **`task.station_bag_dry_total_seconds` is a station drying timer, not cleaned area.** Area is `task.area_m2`.
+- **Coordinates are `not_calibrated`.** Use them only to see whether it moved, never for absolute position.
+- **Absent telemetry is `null`, never `0`.** An empty fault list means unknown health, not healthy.
+
+## Task Playbook
+
+Each task lists the default primitive sequence, the interpretation points, and what to do when things differ. Sequences are the default path, not a fixed script.
+
+### Confirm current state
+`narwal-local snapshot`. Read `base_query.mode` and `task`: `standby` with null task fields is idle; a cleaning mode with `area_m2` / `elapsed_seconds` is actively cleaning. A `no_broadcast` warning means this short window saw no broadcast, **not** that it is asleep or offline.
+
+### Is it stuck / why did it stop
+A single snapshot cannot answer "why". To see whether it is moving, run a bounded `watch` (`--duration 20`) and compare `map/display_map` `position.raw_x/raw_y` across samples. Same point repeatedly, or `lost_context: true`, is when stuck becomes plausible. For "how did it stop earlier", use the App's history — there is none here.
+
+### Start a clean
+Whole house `narwal-local start`; selected rooms `narwal-local clean --rooms 3,5`. Both use `clean/start_clean`, which **only applies while the robot is docked**; otherwise the robot answers `NOT_READY` (exit 20). Room ids and `map_id` come from the current `get_map`, not config; the tool never maps a room id to a household name. Use `--dry-run` first to see the topic and payload without sending.
+
+### Intervene (pause / resume / stop / dock)
+`pause`→`task/pause`, `resume`→`task/resume`, `stop`→`task/force_end`, `dock`→`supply/recall`. All need `--yes`; `--dry-run` previews without sending a control topic. `stop` is slow by design (the robot physically stops before answering); do not treat the wait as failure. Docking ends the task on its own — do not stack a `stop` after it.
+
+### Watch for a while
+`watch --duration SECONDS` (required, max 300), one JSONL line per broadcast. This is the only way to get "a stretch of time"; there is no background daemon, so nothing exists outside the window.
+
+## What This Tool Cannot Do
+
+These are product boundaries, not bugs. State them rather than implying more:
+- **No history.** Cannot explain a past stop.
+- **No stuck verdict.** Stuck is inferred from movement, not a status bit.
+- **No dock maintenance.** Wash mop, dry mop, dust gathering, ambient light are permanently denied; use the App. "Recall then wash mop" is only half doable here (the `dock` half).
+- **No room aliases.** Only map room ids.
+
+## Command Reference
+
+| Goal | Command | Key Flags |
+|---|---|---|
+| Status, battery, task | `narwal-local snapshot` | `[--listen-seconds 3] [--with-map] [--with-features]` |
+| Floor plan PNG + rooms | `narwal-local map` | `[--out-dir DIR]` |
+| Live telemetry window | `narwal-local watch` | `--duration SECONDS` (required, ≤300) |
+| Diagnose connection | `narwal-local doctor` | — |
+| Pause / resume | `narwal-local pause` / `resume` | `--yes [--dry-run]` |
+| Force stop | `narwal-local stop` | `--yes [--dry-run]` (slow) |
+| Return to dock | `narwal-local dock` | `--yes [--dry-run]` |
+| Whole-house clean | `narwal-local start` | `--yes [--dry-run] [--mode] [--fan] [--water] [--passes]` |
+| Selected-room clean | `narwal-local clean` | `--rooms ID[,ID...] --yes [--dry-run]` |
+
+Control commands require `--yes`; `--dry-run` builds the payload and sends no control topic. Unless `--no-audit`, each write appends a line to `control_audit.jsonl`. Only one connection per source IP is allowed — do not run commands in parallel.
 
 ## Execution Parameters & Safety Bounds
 

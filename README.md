@@ -29,6 +29,8 @@ No Home Assistant instance, no cloud accounts, and no proprietary vendor bridges
 
 Control commands require `--yes` and write an audit line unless `--no-audit` is passed. `--dry-run` builds the payload and records the topic and payload hex without sending a control topic.
 
+For how to read the robot's state and compose these primitives into a task (and what the tool cannot do), see [`docs/tasks.md`](docs/tasks.md).
+
 ### Operational Safety Boundaries
 
 - **Read-only by default:** The default session allows an allowlist of query topics only. Control topics are reachable only from a session opened for control, which every control command does explicitly.
